@@ -6,7 +6,11 @@ class ApiClient {
   ApiClient({String? baseUrl})
       : dio = Dio(
           BaseOptions(
-            baseUrl: baseUrl ?? 'http://localhost:4007/api',
+            baseUrl: baseUrl ??
+                const String.fromEnvironment(
+                  'API_BASE_URL',
+                  defaultValue: 'https://hue-warn.spit-husc.io.vn/api',
+                ),
             connectTimeout: const Duration(seconds: 15),
             receiveTimeout: const Duration(seconds: 15),
             headers: {

@@ -16,6 +16,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build and package server
+        run: |
+          cd server
+          npm install
+          npm run build
+          tar -czf ../server-bundle.tar.gz package.json package-lock.json tsconfig.json dist src
+          cd ..
+
       - name: Parse VPS credentials
         id: vps
         run: |
@@ -50,30 +63,42 @@ jobs:
           echo "::add-mask::$PASS"
           echo "pass=$PASS" >> $GITHUB_OUTPUT
 
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ steps.vps.outputs.host }}
-          port: ${{ steps.vps.outputs.port }}
-          username: ${{ steps.vps.outputs.user }}
-          password: ${{ steps.vps.outputs.pass }}
-          script: |
-            mkdir -p ~/huewarn
-            cd ~/huewarn
-            if [ -d ".git" ]; then
-              git fetch origin
-              git reset --hard origin/main || git reset --hard origin/master || git pull
-            else
-              git clone https://github.com/${{ github.repository }}.git .
-            fi
-            cd server
-            npm install
-            npm run build
-            if [ -f ".env" ]; then
-              grep -q '^PORT=' .env && sed -i 's/^PORT=.*/PORT=4007/' .env || echo "PORT=4007" >> .env
-            else
-              echo "PORT=4007" > .env
-            fi
-            command -v pm2 >/dev/null 2>&1 || npm install -g pm2
-            pm2 describe huewarn-server > /dev/null 2>&1 && pm2 restart huewarn-server --update-env || pm2 start dist/index.js --name "huewarn-server"
-            pm2 save
+      - name: Deploy to VPS
+        env:
+          HOST: ${{ steps.vps.outputs.host }}
+          PORT: ${{ steps.vps.outputs.port }}
+          USER: ${{ steps.vps.outputs.user }}
+          PASS: ${{ steps.vps.outputs.pass }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          export SSHPASS="$PASS"
+          SSH_CMD="sshpass -e ssh -p $PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $USER@$HOST"
+
+          $SSH_CMD "mkdir -p ~/huewarn"
+          cat server-bundle.tar.gz | $SSH_CMD "tar -xzf - -C ~/huewarn"
+
+          cat << 'EOF' > /tmp/deploy.env
+          ${{ secrets.ENV }}
+          EOF
+          cat /tmp/deploy.env | $SSH_CMD "cat > ~/huewarn/.env"
+          rm -f /tmp/deploy.env
+
+          $SSH_CMD << 'REMOTE_SCRIPT'
+          export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:~/.npm-global/bin:~/.nvm/versions/node/$(ls ~/.nvm/versions/node 2>/dev/null | tail -n 1)/bin
+          [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
+          [ -s "$HOME/.profile" ] && . "$HOME/.profile"
+          [ -s "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+
+          cd ~/huewarn
+          if [ -f ".env" ]; then
+            grep -q '^PORT=' .env && sed -i 's/^PORT=.*/PORT=4007/' .env || echo "PORT=4007" >> .env
+          else
+            echo "PORT=4007" > .env
+          fi
+
+          npm install
+          npm run build
+
+          pm2 describe huewarn-server > /dev/null 2>&1 && pm2 restart huewarn-server --update-env || pm2 start dist/index.js --name "huewarn-server"
+          pm2 save
+          REMOTE_SCRIPT
