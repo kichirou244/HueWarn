@@ -22,30 +22,33 @@ jobs:
           node-version: '20'
 
       - name: Build and package server
+        id: bundle
         run: |
           cd server
           npm install
           npm run build
           tar -czf ../server-bundle.tar.gz package.json package-lock.json tsconfig.json dist src
           cd ..
+          BUNDLE_B64=$(base64 -w 0 server-bundle.tar.gz 2>/dev/null || base64 server-bundle.tar.gz | tr -d '\r\n')
+          echo "bundle_b64=$BUNDLE_B64" >> $GITHUB_OUTPUT
 
-      - name: Parse VPS credentials
+      - name: Parse VPS credentials and environment
         id: vps
         run: |
           cat << 'EOF' > /tmp/env_vps
           ${{ secrets.ENV_VPS }}
           EOF
 
-          HOST=$(grep -E '^VPS_HOST=' /tmp/env_vps | cut -d '=' -f2- | tr -d '\r"' || true)
-          PORT=$(grep -E '^VPS_PORT=' /tmp/env_vps | cut -d '=' -f2- | tr -d '\r"' || true)
-          USER=$(grep -E '^VPS_USERNAME=' /tmp/env_vps | cut -d '=' -f2- | tr -d '\r"' || true)
-          PASS=$(grep -E '^VPS_PASSWORD=' /tmp/env_vps | cut -d '=' -f2- | tr -d '\r"' || true)
+          HOST=$(grep -Ei '^\s*VPS_HOST\s*=' /tmp/env_vps | head -n 1 | sed -E 's/^\s*VPS_HOST\s*=\s*//' | sed -E 's/^["'\'']|["'\'']$//g' | tr -d '\r' || true)
+          PORT=$(grep -Ei '^\s*VPS_PORT\s*=' /tmp/env_vps | head -n 1 | sed -E 's/^\s*VPS_PORT\s*=\s*//' | sed -E 's/^["'\'']|["'\'']$//g' | tr -d '\r' || true)
+          USER=$(grep -Ei '^\s*(VPS_USERNAME|VPS_USER)\s*=' /tmp/env_vps | head -n 1 | sed -E 's/^\s*(VPS_USERNAME|VPS_USER)\s*=\s*//' | sed -E 's/^["'\'']|["'\'']$//g' | tr -d '\r' || true)
+          PASS=$(grep -Ei '^\s*(VPS_PASSWORD|VPS_PASS)\s*=' /tmp/env_vps | head -n 1 | sed -E 's/^\s*(VPS_PASSWORD|VPS_PASS)\s*=\s*//' | sed -E 's/^["'\'']|["'\'']$//g' | tr -d '\r' || true)
 
           if [ -z "$HOST" ]; then
-            HOST=$(echo '${{ secrets.ENV_VPS }}' | jq -r '.VPS_HOST // empty' 2>/dev/null || true)
-            PORT=$(echo '${{ secrets.ENV_VPS }}' | jq -r '.VPS_PORT // empty' 2>/dev/null || true)
-            USER=$(echo '${{ secrets.ENV_VPS }}' | jq -r '.VPS_USERNAME // empty' 2>/dev/null || true)
-            PASS=$(echo '${{ secrets.ENV_VPS }}' | jq -r '.VPS_PASSWORD // empty' 2>/dev/null || true)
+            HOST=$(jq -r '.VPS_HOST // empty' /tmp/env_vps 2>/dev/null || true)
+            PORT=$(jq -r '.VPS_PORT // empty' /tmp/env_vps 2>/dev/null || true)
+            USER=$(jq -r '.VPS_USERNAME // .VPS_USER // empty' /tmp/env_vps 2>/dev/null || true)
+            PASS=$(jq -r '.VPS_PASSWORD // .VPS_PASS // empty' /tmp/env_vps 2>/dev/null || true)
           fi
 
           HOST=${HOST:-${{ secrets.VPS_HOST }}}
@@ -57,48 +60,50 @@ jobs:
 
           rm -f /tmp/env_vps
 
+          cat << 'EOF' > /tmp/app_env
+          ${{ secrets.ENV }}
+          EOF
+
+          ENV_B64=$(base64 -w 0 /tmp/app_env 2>/dev/null || base64 /tmp/app_env | tr -d '\r\n')
+          rm -f /tmp/app_env
+
           echo "host=$HOST" >> $GITHUB_OUTPUT
           echo "port=$PORT" >> $GITHUB_OUTPUT
           echo "user=$USER" >> $GITHUB_OUTPUT
           echo "::add-mask::$PASS"
           echo "pass=$PASS" >> $GITHUB_OUTPUT
+          echo "env_b64=$ENV_B64" >> $GITHUB_OUTPUT
 
-      - name: Deploy to VPS
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
         env:
-          HOST: ${{ steps.vps.outputs.host }}
-          PORT: ${{ steps.vps.outputs.port }}
-          USER: ${{ steps.vps.outputs.user }}
-          PASS: ${{ steps.vps.outputs.pass }}
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
-          export SSHPASS="$PASS"
-          SSH_CMD="sshpass -e ssh -p $PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $USER@$HOST"
-
-          $SSH_CMD "mkdir -p ~/huewarn"
-          cat server-bundle.tar.gz | $SSH_CMD "tar -xzf - -C ~/huewarn"
-
-          cat << 'EOF' > /tmp/deploy.env
-          ${{ secrets.ENV }}
-          EOF
-          cat /tmp/deploy.env | $SSH_CMD "cat > ~/huewarn/.env"
-          rm -f /tmp/deploy.env
-
-          $SSH_CMD << 'REMOTE_SCRIPT'
-          export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:~/.npm-global/bin:~/.nvm/versions/node/$(ls ~/.nvm/versions/node 2>/dev/null | tail -n 1)/bin
-          [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
-          [ -s "$HOME/.profile" ] && . "$HOME/.profile"
-          [ -s "$HOME/.bashrc" ] && . "$HOME/.bashrc"
-
-          cd ~/huewarn
-          if [ -f ".env" ]; then
-            grep -q '^PORT=' .env && sed -i 's/^PORT=.*/PORT=4007/' .env || echo "PORT=4007" >> .env
-          else
-            echo "PORT=4007" > .env
-          fi
-
-          npm install
-          npm run build
-
-          pm2 describe huewarn-server > /dev/null 2>&1 && pm2 restart huewarn-server --update-env || pm2 start dist/index.js --name "huewarn-server"
-          pm2 save
-          REMOTE_SCRIPT
+          BUNDLE_B64: ${{ steps.bundle.outputs.bundle_b64 }}
+          ENV_B64: ${{ steps.vps.outputs.env_b64 }}
+        with:
+          host: ${{ steps.vps.outputs.host }}
+          port: ${{ steps.vps.outputs.port }}
+          username: ${{ steps.vps.outputs.user }}
+          password: ${{ steps.vps.outputs.pass }}
+          envs: BUNDLE_B64,ENV_B64
+          command_timeout: 10m
+          timeout: 60s
+          script: |
+            mkdir -p ~/huewarn
+            cd ~/huewarn
+            echo "$BUNDLE_B64" | base64 -d | tar -xzf -
+            if [ -n "$ENV_B64" ]; then
+              echo "$ENV_B64" | base64 -d > .env
+            fi
+            if [ -f ".env" ]; then
+              grep -q '^PORT=' .env && sed -i 's/^PORT=.*/PORT=4007/' .env || echo "PORT=4007" >> .env
+            else
+              echo "PORT=4007" > .env
+            fi
+            export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:~/.npm-global/bin:~/.nvm/versions/node/$(ls ~/.nvm/versions/node 2>/dev/null | tail -n 1)/bin
+            [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
+            [ -s "$HOME/.profile" ] && . "$HOME/.profile"
+            [ -s "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+            npm install
+            npm run build
+            pm2 describe huewarn-server > /dev/null 2>&1 && pm2 restart huewarn-server --update-env || pm2 start dist/index.js --name "huewarn-server"
+            pm2 save
