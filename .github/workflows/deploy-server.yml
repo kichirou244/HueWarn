@@ -1,0 +1,79 @@
+name: Deploy Server
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'server/**'
+      - '.github/workflows/deploy-server.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Remote VPS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse VPS credentials
+        id: vps
+        run: |
+          cat << 'EOF' > /tmp/env_vps
+          ${{ secrets.ENV_VPS }}
+          EOF
+
+          HOST=$(grep -E '^VPS_HOST=' /tmp/env_vps | cut -d '=' -f2- | tr -d '\r"' || true)
+          PORT=$(grep -E '^VPS_PORT=' /tmp/env_vps | cut -d '=' -f2- | tr -d '\r"' || true)
+          USER=$(grep -E '^VPS_USERNAME=' /tmp/env_vps | cut -d '=' -f2- | tr -d '\r"' || true)
+          PASS=$(grep -E '^VPS_PASSWORD=' /tmp/env_vps | cut -d '=' -f2- | tr -d '\r"' || true)
+
+          if [ -z "$HOST" ]; then
+            HOST=$(echo '${{ secrets.ENV_VPS }}' | jq -r '.VPS_HOST // empty' 2>/dev/null || true)
+            PORT=$(echo '${{ secrets.ENV_VPS }}' | jq -r '.VPS_PORT // empty' 2>/dev/null || true)
+            USER=$(echo '${{ secrets.ENV_VPS }}' | jq -r '.VPS_USERNAME // empty' 2>/dev/null || true)
+            PASS=$(echo '${{ secrets.ENV_VPS }}' | jq -r '.VPS_PASSWORD // empty' 2>/dev/null || true)
+          fi
+
+          HOST=${HOST:-${{ secrets.VPS_HOST }}}
+          PORT=${PORT:-${{ secrets.VPS_PORT }}}
+          PORT=${PORT:-22}
+          USER=${USER:-${{ secrets.VPS_USERNAME }}}
+          USER=${USER:-root}
+          PASS=${PASS:-${{ secrets.VPS_PASSWORD }}}
+
+          rm -f /tmp/env_vps
+
+          echo "host=$HOST" >> $GITHUB_OUTPUT
+          echo "port=$PORT" >> $GITHUB_OUTPUT
+          echo "user=$USER" >> $GITHUB_OUTPUT
+          echo "::add-mask::$PASS"
+          echo "pass=$PASS" >> $GITHUB_OUTPUT
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ steps.vps.outputs.host }}
+          port: ${{ steps.vps.outputs.port }}
+          username: ${{ steps.vps.outputs.user }}
+          password: ${{ steps.vps.outputs.pass }}
+          script: |
+            mkdir -p ~/huewarn
+            cd ~/huewarn
+            if [ -d ".git" ]; then
+              git fetch origin
+              git reset --hard origin/main || git reset --hard origin/master || git pull
+            else
+              git clone https://github.com/${{ github.repository }}.git .
+            fi
+            cd server
+            npm install
+            npm run build
+            if [ -f ".env" ]; then
+              grep -q '^PORT=' .env && sed -i 's/^PORT=.*/PORT=4007/' .env || echo "PORT=4007" >> .env
+            else
+              echo "PORT=4007" > .env
+            fi
+            command -v pm2 >/dev/null 2>&1 || npm install -g pm2
+            pm2 describe huewarn-server > /dev/null 2>&1 && pm2 restart huewarn-server --update-env || pm2 start dist/index.js --name "huewarn-server"
+            pm2 save

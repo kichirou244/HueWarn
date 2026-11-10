@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+.DS_Store
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+huewarn.sqlite
+huewarn.sqlite-wal
+huewarn.sqlite-shm

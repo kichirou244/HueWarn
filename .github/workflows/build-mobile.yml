@@ -1,0 +1,151 @@
+name: Build Mobile (APK & IPA)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/build-mobile.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/build-mobile.yml'
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Build Android (APK)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Run tests
+        working-directory: mobile
+        run: flutter test
+
+      - name: Build Android APK
+        working-directory: mobile
+        run: |
+          flutter build apk --release \
+            --build-name="1.0.${{ github.run_number }}" \
+            --build-number="${{ github.run_number }}"
+          cp build/app/outputs/flutter-apk/app-release.apk HueWarn-v1.0.${{ github.run_number }}.apk
+          cp build/app/outputs/flutter-apk/app-release.apk HueWarn.apk
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HueWarn-Android-v1.0.${{ github.run_number }}
+          path: |
+            mobile/HueWarn-v1.0.${{ github.run_number }}.apk
+            mobile/HueWarn.apk
+          retention-days: 30
+
+  build-ios:
+    name: Build iOS (IPA)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Run tests
+        working-directory: mobile
+        run: flutter test
+
+      - name: Build iOS App
+        working-directory: mobile
+        run: |
+          flutter build ios --release --no-codesign \
+            --build-name="1.0.${{ github.run_number }}" \
+            --build-number="${{ github.run_number }}" || true
+
+          if [ ! -d "build/ios/iphoneos/Runner.app" ]; then
+            xcodebuild -workspace ios/Runner.xcworkspace \
+              -scheme Runner \
+              -configuration Release \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath build/ios_derived \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              build
+          fi
+
+      - name: Package IPA
+        working-directory: mobile
+        run: |
+          mkdir -p Payload
+          if [ -d "build/ios/iphoneos/Runner.app" ]; then
+            cp -r build/ios/iphoneos/Runner.app Payload/
+          elif [ -d "build/ios_derived/Build/Products/Release-iphoneos/Runner.app" ]; then
+            cp -r build/ios_derived/Build/Products/Release-iphoneos/Runner.app Payload/
+          else
+            APP_PATH=$(find build -name "Runner.app" -type d | head -n 1)
+            cp -r "$APP_PATH" Payload/
+          fi
+          zip -r -q "HueWarn-v1.0.${{ github.run_number }}.ipa" Payload
+          cp "HueWarn-v1.0.${{ github.run_number }}.ipa" HueWarn.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HueWarn-iOS-v1.0.${{ github.run_number }}
+          path: |
+            mobile/HueWarn-v1.0.${{ github.run_number }}.ipa
+            mobile/HueWarn.ipa
+          retention-days: 30
+
+  package-all:
+    name: Package Both (APK & IPA)
+    needs: [build-android, build-ios]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release directory
+        run: mkdir -p dist
+
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: HueWarn-Android-v1.0.${{ github.run_number }}
+          path: dist
+
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: HueWarn-iOS-v1.0.${{ github.run_number }}
+          path: dist
+
+      - name: Upload Combined Release Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HueWarn-v1.0.${{ github.run_number }}-Packages
+          path: dist/*
+          retention-days: 30
