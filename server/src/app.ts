@@ -97,7 +97,15 @@ export function createApp(): AppInstance {
 
   app.use('/api', apiRouter);
 
+  app.get('/', (_req, res) => {
+    res.json({ name: 'HueWarn API', status: 'ok', timestamp: new Date().toISOString() });
+  });
+
   app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
