@@ -2,6 +2,7 @@ import { AppConfig } from '../config/environment.js';
 import { IVRainClient, RawVRainStationEntry } from '../clients/vrain.client.js';
 import { IHistoricalRepository, IStateCacheRepository } from '../repositories/interfaces.js';
 import { RainStationData, RainSummary } from '../types/index.js';
+import { formatVietnamTime, normalizeUpdatedAt } from '../utils/datetime.js';
 
 export interface IRainfallService {
   getRainfallSummary(): Promise<RainSummary>;
@@ -18,15 +19,16 @@ export class RainfallService implements IRainfallService {
   ) {}
 
   public async getRainfallSummary(): Promise<RainSummary> {
+    // Last known good snapshot survives upstream outages / day rollovers.
+    const cached = await this.cacheRepository.get<RainSummary>('LATEST_RAIN_SUMMARY');
     const response = await this.vrainClient.fetchCityRain(this.config.vrain.cityId);
 
     if (!response || !response.entries || response.entries.length === 0) {
-      const cached = await this.cacheRepository.get<RainSummary>('LATEST_RAIN_SUMMARY');
-      if (cached) {
-        return cached;
+      if (cached && cached.stations.length > 0) {
+        return normalizeUpdatedAt(cached);
       }
       return {
-        updatedAt: new Date().toISOString(),
+        updatedAt: formatVietnamTime(new Date()),
         cityId: this.config.vrain.cityId,
         stations: [],
         hasSignificantChanges: false,
@@ -69,6 +71,18 @@ export class RainfallService implements IRainfallService {
       };
     });
 
+    // If the source has only partially refreshed, keep stations from the last
+    // good snapshot instead of showing an almost-empty rain section.
+    if (cached && cached.stations.length > stations.length) {
+      const seen = new Set(stations.map((s) => s.stationId));
+      for (const station of cached.stations) {
+        if (!seen.has(station.stationId)) {
+          stations.push(station);
+          newCache[station.stationId] = station.sumDepth;
+        }
+      }
+    }
+
     stations.sort((a, b) => b.sumDepth - a.sumDepth);
 
     await this.cacheRepository.set(this.cacheKey, newCache, 86400);
@@ -80,7 +94,7 @@ export class RainfallService implements IRainfallService {
       summaryText = `${totalChangeCount} trạm có lượng mưa thay đổi nhẹ`;
     }
 
-    const updatedAt = response.lastModified || new Date().toISOString();
+    const updatedAt = formatVietnamTime(response.lastModified ?? new Date());
     await this.historicalRepository.saveRainfallRecords(stations, updatedAt);
 
     const summary: RainSummary = {
@@ -91,7 +105,7 @@ export class RainfallService implements IRainfallService {
       summaryText,
     };
 
-    await this.cacheRepository.set('LATEST_RAIN_SUMMARY', summary, 600);
+    await this.cacheRepository.set('LATEST_RAIN_SUMMARY', summary, 12 * 60 * 60);
 
     return summary;
   }

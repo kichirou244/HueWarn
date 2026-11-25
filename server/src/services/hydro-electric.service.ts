@@ -2,6 +2,7 @@ import { AppConfig } from '../config/environment.js';
 import { IHydroClient, RawHydroRecord } from '../clients/hydro.client.js';
 import { IHistoricalRepository, IStateCacheRepository } from '../repositories/interfaces.js';
 import { HydroDamData, HydroSummary, HydroTimelinePoint } from '../types/index.js';
+import { formatVietnamTime, normalizeUpdatedAt } from '../utils/datetime.js';
 
 export interface IHydroElectricService {
   getHydroSummary(requestedDate?: string): Promise<HydroSummary>;
@@ -9,6 +10,9 @@ export interface IHydroElectricService {
 
 export class HydroElectricService implements IHydroElectricService {
   private readonly prevCacheKey = 'HYDRO_PREV_DATA';
+  // Separate from the short-lived fresh cache: this one is only used as a
+  // last-known-good fallback when a new day has no measurements yet.
+  private readonly lastGoodCacheKey = 'LAST_GOOD_HYDRO_SUMMARY';
 
   constructor(
     private readonly hydroClient: IHydroClient,
@@ -25,10 +29,12 @@ export class HydroElectricService implements IHydroElectricService {
       ? `HYDRO_SUMMARY_${targetDateStr.replace(/\//g, '_')}`
       : 'LATEST_HYDRO_SUMMARY';
 
-    const cached = await this.cacheRepository.get<HydroSummary>(cacheKey);
-    if (cached) {
-      return cached;
+    const freshCache = await this.cacheRepository.get<HydroSummary>(cacheKey);
+    if (freshCache) {
+      return normalizeUpdatedAt(freshCache);
     }
+
+    const cached = await this.cacheRepository.get<HydroSummary>(this.lastGoodCacheKey);
 
     const prevCache = await this.cacheRepository.get<Record<string, number>>(this.prevCacheKey);
     const newCache: Record<string, number> = {};
@@ -127,18 +133,49 @@ export class HydroElectricService implements IHydroElectricService {
       }
     }
 
+    // Day rollover: upstream often has no rows for the new day yet. Serve the
+    // last complete snapshot rather than showing an empty hydro section.
+    if (!isCustomDate && dams.length === 0 && cached && cached.dams.length > 0) {
+      return normalizeUpdatedAt(cached);
+    }
+
     if (!isCustomDate && dams.length > 0) {
       await this.cacheRepository.set(this.prevCacheKey, newCache, 86400);
       await this.historicalRepository.saveHydroRecords(dams);
+
+      // Partial refresh: keep dams that have not reported new values yet.
+      if (cached && cached.dams.length > dams.length) {
+        const seen = new Set(
+          dams.map((d) => `${d.loaicongtrinh}_${d.tencongtrinh}`)
+        );
+        for (const dam of cached.dams) {
+          const key = `${dam.loaicongtrinh}_${dam.tencongtrinh}`;
+          if (!seen.has(key)) {
+            dams.push(dam);
+          }
+        }
+      }
+
+      await this.cacheRepository.set(
+        this.lastGoodCacheKey,
+        {
+          updatedAt: formatVietnamTime(new Date()),
+          queryDate: effectiveDate,
+          dams,
+        },
+        12 * 60 * 60
+      );
     }
 
     const summary: HydroSummary = {
-      updatedAt: new Date().toISOString(),
+      updatedAt: formatVietnamTime(new Date()),
       queryDate: effectiveDate,
       dams,
     };
 
-    const ttl = isCustomDate ? 3600 : 300;
+    // An empty result must not be cached for the normal freshness window;
+    // otherwise the app would keep showing "no data" after new rows arrive.
+    const ttl = isCustomDate ? 3600 : dams.length > 0 ? 300 : 60;
     await this.cacheRepository.set(cacheKey, summary, ttl);
 
     return summary;

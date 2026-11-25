@@ -3,8 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/app_colors.dart';
 import '../../models/dashboard_data.dart';
 import '../../providers/monitoring_providers.dart';
+import '../widgets/dashboard_splash.dart';
 import '../widgets/header_bar.dart';
 import '../widgets/river_water_charts.dart';
+import '../widgets/section_skeleton.dart';
 import '../widgets/water_level_card.dart';
 import '../widgets/rain_chart.dart';
 import '../widgets/rain_card.dart';
@@ -13,23 +15,28 @@ import '../widgets/single_dam_history_chart.dart';
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
 
+  static const _tabs = [
+    {'title': 'Tổng quan', 'icon': Icons.dashboard_outlined},
+    {'title': 'Mực nước', 'icon': Icons.water},
+    {'title': 'Lượng mưa', 'icon': Icons.cloud_outlined},
+    {'title': 'Thủy điện', 'icon': Icons.power_outlined},
+  ];
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final dashboardAsync = ref.watch(dashboardNotifierProvider);
     final selectedTab = ref.watch(selectedTabProvider);
+    final isRefreshing = ref.watch(isRefreshingProvider);
 
     return Scaffold(
       backgroundColor: AppColors.background,
+      bottomNavigationBar: _buildBottomNav(ref, selectedTab),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 640),
             child: dashboardAsync.when(
-              loading: () => const Center(
-                child: CircularProgressIndicator(
-                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
-                ),
-              ),
+              loading: () => const DashboardSplash(),
               error: (error, stack) => _buildErrorView(ref, error.toString()),
               data: (dashboard) {
                 final songHuongHistory =
@@ -45,9 +52,13 @@ class DashboardScreen extends ConsumerWidget {
                     .firstOrNull;
 
                 final huongDepth = huongStation?.depth ??
-                    (songHuongHistory.isNotEmpty ? songHuongHistory.last.depth : 0.0);
+                    (songHuongHistory.isNotEmpty
+                        ? songHuongHistory.last.depth
+                        : 0.0);
                 final boDepth = boStation?.depth ??
-                    (songBoHistory.isNotEmpty ? songBoHistory.last.depth : 0.0);
+                    (songBoHistory.isNotEmpty
+                        ? songBoHistory.last.depth
+                        : 0.0);
 
                 final hydroAsync = ref.watch(hydroDamsNotifierProvider);
                 final currentDams =
@@ -61,6 +72,27 @@ class DashboardScreen extends ConsumerWidget {
                 final huongDams =
                     currentDams.where((d) => !boDams.contains(d)).toList();
 
+                final String updateLabel;
+                final String updateTime;
+                switch (selectedTab) {
+                  case 0:
+                    updateLabel = 'Tổng hợp';
+                    updateTime = dashboard.timestamp;
+                    break;
+                  case 1:
+                    updateLabel = 'Mực nước';
+                    updateTime = dashboard.waterLevels.updatedAt;
+                    break;
+                  case 2:
+                    updateLabel = 'Lượng mưa';
+                    updateTime = dashboard.rainfall.updatedAt;
+                    break;
+                  default:
+                    updateLabel = 'Thủy điện';
+                    updateTime = hydroAsync.value?.updatedAt ??
+                        dashboard.hydroDams.updatedAt;
+                }
+
                 return RefreshIndicator(
                   color: AppColors.primary,
                   backgroundColor: AppColors.surface,
@@ -68,156 +100,170 @@ class DashboardScreen extends ConsumerWidget {
                       ref.read(dashboardNotifierProvider.notifier).refresh(),
                   child: Column(
                     children: [
-                      HeaderBar(
-                        updatedAt: dashboard.waterLevels.updatedAt.isNotEmpty
-                            ? dashboard.waterLevels.updatedAt
-                            : dashboard.timestamp,
-                        isLoading: dashboardAsync.isRefreshing,
-                        onTriggerCheck: () => ref
-                            .read(dashboardNotifierProvider.notifier)
-                            .triggerEvaluation(),
-                      ),
-                      _buildTabSelector(ref, selectedTab),
+                      const HeaderBar(),
                       Expanded(
                         child: SingleChildScrollView(
                           physics: const AlwaysScrollableScrollPhysics(),
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              if (selectedTab == 0) ...[
-                                _buildQuickSummary(
-                                    dashboard, huongDepth, boDepth, boDams, huongDams),
-                                const SizedBox(height: 12),
-                              ],
-                              if (selectedTab == 0 || selectedTab == 1) ...[
-                                _buildSectionHeader(
-                                    '1. MỰC NƯỚC SÔNG HƯƠNG & SÔNG BỒ',
-                                    Icons.water),
-                                const SizedBox(height: 10),
-                                SongHuongChart(
-                                  history: songHuongHistory,
-                                  currentDepth: huongDepth,
-                                ),
-                                SongBoChart(
-                                  history: songBoHistory,
-                                  currentDepth: boDepth,
-                                ),
-                                const SizedBox(height: 6),
-                                const Text(
-                                  'DANH SÁCH CÁC TRẠM ĐO MỰC NƯỚC',
-                                  style: TextStyle(
-                                    color: AppColors.textSecondary,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                ...dashboard.waterLevels.stations
-                                    .take(selectedTab == 0
-                                        ? 3
-                                        : dashboard.waterLevels.stations.length)
-                                    .map((s) => WaterLevelCard(station: s)),
-                                const SizedBox(height: 16),
-                              ],
-                              if (selectedTab == 0 || selectedTab == 2) ...[
-                                _buildSectionHeader(
-                                  '2. LƯỢNG MƯA (${dashboard.rainfall.stations.length} TRẠM HUẾ)',
-                                  Icons.cloud_outlined,
-                                ),
-                                const SizedBox(height: 10),
-                                RainChart(stations: dashboard.rainfall.stations),
-                                const SizedBox(height: 14),
-                                ...dashboard.rainfall.stations
-                                    .take(selectedTab == 0
-                                        ? 6
-                                        : dashboard.rainfall.stations.length)
-                                    .map((s) => RainCard(station: s)),
-                                if (selectedTab == 0 &&
-                                    dashboard.rainfall.stations.length > 6)
-                                  Padding(
-                                    padding:
-                                        const EdgeInsets.only(top: 4, bottom: 8),
-                                    child: OutlinedButton(
-                                      onPressed: () => ref
-                                          .read(selectedTabProvider.notifier)
-                                          .selectTab(2),
-                                      style: OutlinedButton.styleFrom(
-                                        side: const BorderSide(
-                                            color: AppColors.primary),
-                                        foregroundColor: AppColors.primary,
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(8),
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                          child: isRefreshing
+                              ? _buildSkeletonForTab(selectedTab)
+                              : Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    _buildUpdateTag(updateLabel, updateTime),
+                                    if (selectedTab == 0) ...[
+                                      _buildQuickSummary(dashboard, huongDepth,
+                                          boDepth, boDams, huongDams),
+                                      const SizedBox(height: 12),
+                                    ],
+                                    if (selectedTab == 0 || selectedTab == 1) ...[
+                                      _buildSectionHeader(
+                                        '1. MỰC NƯỚC SÔNG HƯƠNG & SÔNG BỒ',
+                                        Icons.water,
+                                      ),
+                                      const SizedBox(height: 10),
+                                      SongHuongChart(
+                                        history: songHuongHistory,
+                                        currentDepth: huongDepth,
+                                      ),
+                                      SongBoChart(
+                                        history: songBoHistory,
+                                        currentDepth: boDepth,
+                                      ),
+                                      const SizedBox(height: 6),
+                                      const Text(
+                                        'DANH SÁCH CÁC TRẠM ĐO MỰC NƯỚC',
+                                        style: TextStyle(
+                                          color: AppColors.textSecondary,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          letterSpacing: 0.5,
                                         ),
                                       ),
-                                      child: Text(
-                                        'Xem toàn bộ ${dashboard.rainfall.stations.length} trạm đo mưa',
-                                        style: const TextStyle(
-                                            fontWeight: FontWeight.w700),
+                                      const SizedBox(height: 8),
+                                      ...dashboard.waterLevels.stations
+                                          .take(selectedTab == 0
+                                              ? 3
+                                              : dashboard
+                                                  .waterLevels.stations.length)
+                                          .map((s) => WaterLevelCard(station: s)),
+                                      const SizedBox(height: 16),
+                                    ],
+                                    if (selectedTab == 0 || selectedTab == 2) ...[
+                                      _buildSectionHeader(
+                                        '2. LƯỢNG MƯA (${dashboard.rainfall.stations.length} TRẠM HUẾ)',
+                                        Icons.cloud_outlined,
                                       ),
-                                    ),
-                                  ),
-                                const SizedBox(height: 16),
-                              ],
-                              if (selectedTab == 0 || selectedTab == 3) ...[
-                                _buildSectionHeader(
-                                    '3. HỒ CHỨA & THỦY ĐIỆN THEO LƯU VỰC',
-                                    Icons.power_outlined),
-                                const SizedBox(height: 10),
-                                const HydroDateBar(),
-                                const SizedBox(height: 6),
-                                if (hydroAsync.isLoading)
-                                  const Padding(
-                                    padding: EdgeInsets.symmetric(vertical: 24),
-                                    child: Center(
-                                      child: CircularProgressIndicator(
-                                          color: AppColors.primary),
-                                    ),
-                                  )
-                                else if (currentDams.isEmpty)
-                                  Container(
-                                    padding: const EdgeInsets.all(20),
-                                    alignment: Alignment.center,
-                                    decoration: BoxDecoration(
-                                      color: AppColors.surface,
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(color: AppColors.border),
-                                    ),
-                                    child: const Text(
-                                      'Không có dữ liệu đo đạc thủy điện cho ngày đã chọn',
-                                      style: TextStyle(
-                                        color: AppColors.textMuted,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w500,
+                                      const SizedBox(height: 10),
+                                      RainChart(
+                                          stations: dashboard.rainfall.stations),
+                                      const SizedBox(height: 14),
+                                      ...dashboard.rainfall.stations
+                                          .take(selectedTab == 0
+                                              ? 6
+                                              : dashboard
+                                                  .rainfall.stations.length)
+                                          .map((s) => RainCard(station: s)),
+                                      if (selectedTab == 0 &&
+                                          dashboard.rainfall.stations.length > 6)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                              top: 4, bottom: 8),
+                                          child: OutlinedButton(
+                                            onPressed: () => ref
+                                                .read(selectedTabProvider
+                                                    .notifier)
+                                                .selectTab(2),
+                                            style: OutlinedButton.styleFrom(
+                                              side: const BorderSide(
+                                                  color: AppColors.primary),
+                                              foregroundColor:
+                                                  AppColors.primary,
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                            ),
+                                            child: Text(
+                                              'Xem toàn bộ ${dashboard.rainfall.stations.length} trạm đo mưa',
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      const SizedBox(height: 16),
+                                    ],
+                                    if (selectedTab == 0 || selectedTab == 3) ...[
+                                      _buildSectionHeader(
+                                        '3. HỒ CHỨA & THỦY ĐIỆN THEO LƯU VỰC',
+                                        Icons.power_outlined,
                                       ),
-                                    ),
-                                  )
-                                else ...[
-                                  if (boDams.isNotEmpty) ...[
-                                    _buildRiverDamSubheader(
-                                        'LƯU VỰC SÔNG BỒ (THỦY ĐIỆN HƯƠNG ĐIỀN)',
-                                        AppColors.riverBo),
-                                    const SizedBox(height: 8),
-                                    ...boDams.map(
-                                        (d) => SingleDamHistoryChart(dam: d)),
-                                    const SizedBox(height: 12),
+                                      const SizedBox(height: 10),
+                                      HydroDateBar(
+                                        dataDate: hydroAsync.value?.queryDate ??
+                                            dashboard.hydroDams.queryDate,
+                                      ),
+                                      const SizedBox(height: 6),
+                                      if (hydroAsync.isLoading)
+                                        const Column(
+                                          children: [
+                                            ShimmerBox(height: 180),
+                                            SizedBox(height: 10),
+                                            ShimmerBox(height: 180),
+                                          ],
+                                        )
+                                      else if (currentDams.isEmpty)
+                                        Container(
+                                          padding: const EdgeInsets.all(20),
+                                          alignment: Alignment.center,
+                                          decoration: BoxDecoration(
+                                            color: AppColors.surface,
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                            border: Border.all(
+                                                color: AppColors.border),
+                                          ),
+                                          child: const Text(
+                                            'Không có dữ liệu đo đạc thủy điện cho ngày đã chọn',
+                                            style: TextStyle(
+                                              color: AppColors.textMuted,
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                        )
+                                      else ...[
+                                        if (boDams.isNotEmpty) ...[
+                                          _buildRiverDamSubheader(
+                                            'LƯU VỰC SÔNG BỒ (THỦY ĐIỆN HƯƠNG ĐIỀN)',
+                                            AppColors.riverBo,
+                                          ),
+                                          const SizedBox(height: 8),
+                                          ...boDams.map(
+                                              (d) => SingleDamHistoryChart(
+                                                  dam: d)),
+                                          const SizedBox(height: 12),
+                                        ],
+                                        if (huongDams.isNotEmpty) ...[
+                                          _buildRiverDamSubheader(
+                                            'LƯU VỰC SÔNG HƯƠNG (BÌNH ĐIỀN & TẢ TRẠCH)',
+                                            AppColors.riverHuong,
+                                          ),
+                                          const SizedBox(height: 8),
+                                          ...huongDams.map(
+                                              (d) => SingleDamHistoryChart(
+                                                  dam: d)),
+                                        ],
+                                      ],
+                                      const SizedBox(height: 24),
+                                    ],
                                   ],
-                                  if (huongDams.isNotEmpty) ...[
-                                    _buildRiverDamSubheader(
-                                        'LƯU VỰC SÔNG HƯƠNG (BÌNH ĐIỀN & TẢ TRẠCH)',
-                                        AppColors.riverHuong),
-                                    const SizedBox(height: 8),
-                                    ...huongDams.map(
-                                        (d) => SingleDamHistoryChart(dam: d)),
-                                  ],
-                                ],
-                                const SizedBox(height: 24),
-                              ],
-                            ],
-                          ),
+                                ),
                         ),
                       ),
                     ],
@@ -228,6 +274,158 @@ class DashboardScreen extends ConsumerWidget {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildBottomNav(WidgetRef ref, int selectedTab) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(top: BorderSide(color: AppColors.border, width: 1.0)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Row(
+          children: List.generate(_tabs.length, (index) {
+            final item = _tabs[index];
+            final isSelected = selectedTab == index;
+            return Expanded(
+              child: InkWell(
+                onTap: () => ref
+                    .read(selectedTabProvider.notifier)
+                    .selectTab(index),
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? AppColors.accentLight
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        item['icon'] as IconData,
+                        size: 20,
+                        color: isSelected
+                            ? AppColors.primary
+                            : AppColors.textMuted,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        item['title'] as String,
+                        style: TextStyle(
+                          color: isSelected
+                              ? AppColors.primary
+                              : AppColors.textSecondary,
+                          fontSize: 10,
+                          fontWeight: isSelected
+                              ? FontWeight.w800
+                              : FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Container(
+                        width: isSelected ? 18 : 0,
+                        height: 3,
+                        decoration: BoxDecoration(
+                          color: AppColors.primary,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUpdateTag(String label, String rawTime) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.schedule_outlined,
+              size: 13, color: AppColors.textMuted),
+          const SizedBox(width: 6),
+          Text(
+            'Cập nhật $label: ${_formatTime(rawTime)}',
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // The server already sends every timestamp as "HH:mm dd/MM/yyyy" in
+  // Vietnam time, so the UI only needs to display it as-is.
+  String _formatTime(String raw) =>
+      raw.isEmpty ? 'đang cập nhật' : raw;
+
+  Widget _buildSkeletonForTab(int tab) {
+    if (tab == 3) {
+      return const Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ShimmerBox(height: 56, radius: 10),
+          SizedBox(height: 12),
+          ShimmerBox(height: 200, radius: 14),
+          SizedBox(height: 12),
+          ShimmerBox(height: 200, radius: 14),
+          SizedBox(height: 12),
+          ShimmerBox(height: 200, radius: 14),
+        ],
+      );
+    }
+
+    return const Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(child: ShimmerBox(height: 80)),
+            SizedBox(width: 10),
+            Expanded(child: ShimmerBox(height: 80)),
+          ],
+        ),
+        SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(child: ShimmerBox(height: 80)),
+            SizedBox(width: 10),
+            Expanded(child: ShimmerBox(height: 80)),
+          ],
+        ),
+        SizedBox(height: 20),
+        ShimmerBox(height: 22, width: 200),
+        SizedBox(height: 12),
+        ShimmerBox(height: 150, radius: 14),
+        SizedBox(height: 12),
+        ShimmerBox(height: 150, radius: 14),
+        SizedBox(height: 16),
+        ShimmerBox(height: 90),
+        SizedBox(height: 10),
+        ShimmerBox(height: 90),
+        SizedBox(height: 10),
+        ShimmerBox(height: 90),
+      ],
     );
   }
 
@@ -405,75 +603,6 @@ class DashboardScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildTabSelector(WidgetRef ref, int selectedTab) {
-    final tabs = [
-      {'title': 'Tổng quan', 'icon': Icons.dashboard_outlined},
-      {'title': 'Mực nước', 'icon': Icons.water},
-      {'title': 'Lượng mưa', 'icon': Icons.cloud_outlined},
-      {'title': 'Thủy điện', 'icon': Icons.power_outlined},
-    ];
-
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        border: Border(
-          bottom: BorderSide(color: AppColors.border, width: 1.0),
-        ),
-      ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Row(
-          children: List.generate(tabs.length, (index) {
-            final isSelected = selectedTab == index;
-            final item = tabs[index];
-            return Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: InkWell(
-                onTap: () =>
-                    ref.read(selectedTabProvider.notifier).selectTab(index),
-                borderRadius: BorderRadius.circular(8),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? AppColors.primary
-                        : AppColors.surfaceVariant,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        item['icon'] as IconData,
-                        size: 14,
-                        color: isSelected
-                            ? AppColors.textWhite
-                            : AppColors.textSecondary,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        item['title'] as String,
-                        style: TextStyle(
-                          color: isSelected
-                              ? AppColors.textWhite
-                              : AppColors.textPrimary,
-                          fontSize: 12,
-                          fontWeight:
-                              isSelected ? FontWeight.w700 : FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          }),
-        ),
-      ),
-    );
-  }
-
   Widget _buildSectionHeader(String title, IconData icon) {
     return Row(
       children: [
@@ -509,7 +638,8 @@ class DashboardScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.cloud_off_rounded, color: AppColors.primary, size: 40),
+            const Icon(Icons.cloud_off_rounded,
+                color: AppColors.primary, size: 40),
             const SizedBox(height: 12),
             const Text(
               'Không thể kết nối đến máy chủ giám sát',

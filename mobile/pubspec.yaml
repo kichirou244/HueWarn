@@ -1,4 +1,4 @@
-name: mobile
+name: huewarn
 description: "Hue Water Monitoring Mobile App"
 publish_to: 'none'
 version: 1.0.0+1
@@ -22,3 +22,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/huewarn_icon_1024.png

@@ -4,6 +4,7 @@ import { IRainfallService } from '../services/rainfall.service.js';
 import { IHydroElectricService } from '../services/hydro-electric.service.js';
 import { INotificationService } from '../services/notification.service.js';
 import { DashboardData } from '../types/index.js';
+import { formatVietnamTime } from '../utils/datetime.js';
 
 export class DashboardController {
   constructor(
@@ -28,7 +29,7 @@ export class DashboardController {
         rainfall,
         hydroDams,
         recentAlerts,
-        timestamp: new Date().toISOString(),
+        timestamp: formatVietnamTime(new Date()),
       };
 
       res.json({ success: true, data: dashboard });

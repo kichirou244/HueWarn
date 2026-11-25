@@ -12,7 +12,6 @@ abstract class MonitoringRepository {
   Future<HydroSummary> getHydroDams({String? date});
   Future<List<AlertNotification>> getAlerts({int limit = 20});
   Future<void> registerDeviceToken(String token, String platform);
-  Future<void> triggerEvaluation();
 }
 
 class ApiMonitoringRepository implements MonitoringRepository {
@@ -69,8 +68,4 @@ class ApiMonitoringRepository implements MonitoringRepository {
     });
   }
 
-  @override
-  Future<void> triggerEvaluation() async {
-    await apiClient.dio.post('/cron/trigger');
-  }
 }

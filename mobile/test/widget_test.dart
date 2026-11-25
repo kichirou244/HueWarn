@@ -1,13 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mobile/main.dart';
-import 'package:mobile/models/dashboard_data.dart';
-import 'package:mobile/models/water_station.dart';
-import 'package:mobile/models/rain_data.dart';
-import 'package:mobile/models/hydro_dam.dart';
-import 'package:mobile/models/alert_notification.dart';
-import 'package:mobile/providers/monitoring_providers.dart';
-import 'package:mobile/repositories/monitoring_repository.dart';
+import 'package:huewarn/main.dart';
+import 'package:huewarn/models/dashboard_data.dart';
+import 'package:huewarn/models/water_station.dart';
+import 'package:huewarn/models/rain_data.dart';
+import 'package:huewarn/models/hydro_dam.dart';
+import 'package:huewarn/models/alert_notification.dart';
+import 'package:huewarn/providers/monitoring_providers.dart';
+import 'package:huewarn/repositories/monitoring_repository.dart';
 
 class FakeMonitoringRepository implements MonitoringRepository {
   @override

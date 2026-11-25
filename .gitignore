@@ -13,3 +13,4 @@ build/
 huewarn.sqlite
 huewarn.sqlite-wal
 huewarn.sqlite-shm
+build_mobile

@@ -2,6 +2,7 @@ import { AppConfig } from '../config/environment.js';
 import { IVWaterClient, RawVWaterStat } from '../clients/vwater.client.js';
 import { IHistoricalRepository, IStateCacheRepository } from '../repositories/interfaces.js';
 import { WaterLevelHistoryPoint, WaterLevelSummary, WaterStationData } from '../types/index.js';
+import { formatVietnamTime, normalizeUpdatedAt } from '../utils/datetime.js';
 
 export interface IWaterLevelService {
   getWaterLevelSummary(): Promise<WaterLevelSummary>;
@@ -16,6 +17,10 @@ export class WaterLevelService implements IWaterLevelService {
   ) {}
 
   public async getWaterLevelSummary(): Promise<WaterLevelSummary> {
+    // Last known good snapshot: keep it for a long time so the app is never
+    // blank right after midnight while the upstream source has no new data.
+    const cached = await this.cacheRepository.get<WaterLevelSummary>('LATEST_WATER_LEVELS');
+
     const todayStr = this.getFormattedDate(new Date());
     let todayData = await this.vwaterClient.fetchStats(todayStr);
 
@@ -27,12 +32,11 @@ export class WaterLevelService implements IWaterLevelService {
     }
 
     if (!todayData || !todayData.stats || todayData.stats.length === 0) {
-      const cached = await this.cacheRepository.get<WaterLevelSummary>('LATEST_WATER_LEVELS');
-      if (cached) {
-        return cached;
+      if (cached && cached.stations.length > 0) {
+        return normalizeUpdatedAt(cached);
       }
       return {
-        updatedAt: new Date().toISOString(),
+        updatedAt: formatVietnamTime(new Date()),
         highestAlertLevel: 0,
         rapidIncreaseDetected: false,
         maxDepth: 0,
@@ -155,18 +159,80 @@ export class WaterLevelService implements IWaterLevelService {
       }
     }
 
+    // Partial new data (e.g. just after midnight only a few stations report)
+    // is merged with the last good snapshot so no card/chart disappears.
+    const stations = this.mergeStations(processedStations, cached?.stations ?? []);
+    const mergedHistory = this.mergeHistory(history, cached?.history ?? {});
+
+    const targetStations = stations.filter((s) => s.isTarget);
     const summary: WaterLevelSummary = {
-      updatedAt: lastStat.timePoint,
-      highestAlertLevel,
-      rapidIncreaseDetected,
-      maxDepth,
-      stations: processedStations,
-      history,
+      updatedAt: formatVietnamTime(lastStat.timePoint),
+      highestAlertLevel: targetStations.reduce(
+        (max, s) => Math.max(max, s.alertLevel),
+        0
+      ),
+      rapidIncreaseDetected:
+        rapidIncreaseDetected ||
+        targetStations.some(
+          (s) => s.change1h !== null && s.change1h >= this.config.thresholds.rapidIncrease
+        ),
+      maxDepth: targetStations.reduce((max, s) => Math.max(max, s.depth), 0),
+      stations,
+      history: mergedHistory,
     };
 
-    await this.cacheRepository.set('LATEST_WATER_LEVELS', summary, 600);
+    await this.cacheRepository.set('LATEST_WATER_LEVELS', summary, 12 * 60 * 60);
 
     return summary;
+  }
+
+  /** Keep previously seen stations that are missing from the new payload. */
+  private mergeStations(
+    fresh: WaterStationData[],
+    cached: WaterStationData[]
+  ): WaterStationData[] {
+    if (fresh.length >= cached.length) {
+      return fresh;
+    }
+    const seen = new Set(fresh.map((s) => s.id));
+    return [...fresh, ...cached.filter((s) => !seen.has(s.id))];
+  }
+
+  /** Fill missing history points from the previous snapshot, deduped by time. */
+  private mergeHistory(
+    fresh: Record<string, WaterLevelHistoryPoint[]>,
+    cached: Record<string, WaterLevelHistoryPoint[]>
+  ): Record<string, WaterLevelHistoryPoint[]> {
+    const result: Record<string, WaterLevelHistoryPoint[]> = {};
+    const keys = new Set([...Object.keys(fresh), ...Object.keys(cached)]);
+    for (const key of keys) {
+      const points = new Map<string, number>();
+      for (const p of cached[key] ?? []) {
+        points.set(p.timePoint, p.depth);
+      }
+      for (const p of fresh[key] ?? []) {
+        points.set(p.timePoint, p.depth);
+      }
+      result[key] = Array.from(points.entries())
+        .map(([timePoint, depth]) => ({ timePoint, depth }))
+        .sort(
+          (a, b) =>
+            this.historySortKey(a.timePoint).localeCompare(
+              this.historySortKey(b.timePoint)
+            )
+        );
+    }
+    return result;
+  }
+
+  /** "HH:mm dd/MM(/yyyy)" -> chronologically sortable key. */
+  private historySortKey(timePoint: string): string {
+    const match = timePoint.match(
+      /^(\d{1,2}):(\d{2})\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/
+    );
+    if (!match) return timePoint;
+    const [, hour, minute, day, month, year] = match;
+    return `${year ?? '0000'}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour.padStart(2, '0')}:${minute}`;
   }
 
   private calculateStationAlertLevel(stationId: string, depth: number): 0 | 1 | 2 | 3 {

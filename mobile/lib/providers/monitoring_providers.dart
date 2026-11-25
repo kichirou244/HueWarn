@@ -13,6 +13,20 @@ final monitoringRepositoryProvider = Provider<MonitoringRepository>((ref) {
   return ApiMonitoringRepository(client);
 });
 
+/// True while a pull-to-refresh is in flight. The previous data stays in
+/// [dashboardNotifierProvider], so the UI can show section skeletons instead
+/// of falling back to the first-load spinner.
+final isRefreshingProvider = NotifierProvider<IsRefreshingNotifier, bool>(() {
+  return IsRefreshingNotifier();
+});
+
+class IsRefreshingNotifier extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void set(bool value) => state = value;
+}
+
 class DashboardNotifier extends AsyncNotifier<DashboardData> {
   @override
   Future<DashboardData> build() async {
@@ -21,17 +35,22 @@ class DashboardNotifier extends AsyncNotifier<DashboardData> {
   }
 
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() async {
+    final refreshing = ref.read(isRefreshingProvider.notifier);
+    final previous = state.value;
+    refreshing.set(true);
+    try {
       final repository = ref.read(monitoringRepositoryProvider);
-      return repository.getDashboard();
-    });
-  }
-
-  Future<void> triggerEvaluation() async {
-    final repository = ref.read(monitoringRepositoryProvider);
-    await repository.triggerEvaluation();
-    await refresh();
+      state = AsyncValue.data(await repository.getDashboard());
+    } catch (error, stackTrace) {
+      // Keep the last good data on screen if a refresh fails.
+      if (previous != null) {
+        state = AsyncValue.data(previous);
+      } else {
+        state = AsyncValue.error(error, stackTrace);
+      }
+    } finally {
+      refreshing.set(false);
+    }
   }
 }
 

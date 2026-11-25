@@ -96,27 +96,77 @@ export class VWaterClient implements IVWaterClient {
         response = await this.requestStats(dateStr, freshCookie);
       }
 
-      if (response.status !== 200 || !response.data?.stats) {
+      if (response.status !== 200 || !response.data) {
         return null;
       }
 
-      return response.data as RawVWaterResponse;
+      // Legacy shape: { stats: [{ timePoint, stations: [...] }] }
+      if (Array.isArray(response.data.stats)) {
+        return response.data as RawVWaterResponse;
+      }
+
+      // New shape (v3): { ids, stations, rows: [{ t, ts, v: number[] }] }
+      // Each row's values are aligned by index with `ids`.
+      if (Array.isArray(response.data.rows) && Array.isArray(response.data.ids)) {
+        const stationMeta = new Map<
+          string,
+          { name: string; area: string; waterStationType: string }
+        >();
+        for (const station of response.data.stations ?? []) {
+          if (station?.id) {
+            stationMeta.set(station.id, {
+              name: station.name ?? station.id,
+              area: station.area ?? '',
+              waterStationType: station.waterStationType ?? '',
+            });
+          }
+        }
+
+        const ids = response.data.ids as string[];
+        const stats: RawVWaterStat[] = (response.data.rows as Array<{
+          t: string;
+          v?: Array<number | null>;
+        }>).map((row) => ({
+          timePoint: row.t,
+          stations: ids.map((id, index) => {
+            const meta = stationMeta.get(id);
+            const depth = row.v?.[index];
+            return {
+              id,
+              name: meta?.name ?? id,
+              area: meta?.area ?? '',
+              depth: depth === null || depth === undefined ? '0' : String(depth),
+              waterStationType: meta?.waterStationType ?? '',
+            };
+          }),
+        }));
+
+        return { stats };
+      }
+
+      return null;
     } catch {
       return null;
     }
   }
 
   private async requestStats(dateStr: string, cookie: string) {
-    return this.axiosInstance.get('/api/vwater/private/v2/stats/details', {
+    // The detail API moved from /api/vwater/private/v2/... to the legacy
+    // gateway at /d/vwater/private/v3/... (same credentials / session cookie).
+    return this.axiosInstance.get('/d/vwater/private/v3/stats/details', {
       params: {
         from: dateStr,
         to: dateStr,
         i: '_10m',
       },
       headers: {
+        accept: 'application/json, text/plain, */*',
+        'accept-language': 'vi',
         cookie,
-        referer: `${this.config.vwater.baseUrl}/main/detail/vfass`,
+        referer: `${this.config.vwater.baseUrl}/main/dashboard`,
         'x-org-uuid': this.config.vwater.orgUuid,
+        'x-vrain-user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36',
       },
     });
   }

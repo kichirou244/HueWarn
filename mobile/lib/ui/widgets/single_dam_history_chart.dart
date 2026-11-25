@@ -31,7 +31,11 @@ class DamThresholds {
 }
 
 class HydroDateBar extends ConsumerWidget {
-  const HydroDateBar({super.key});
+  /// Effective date of the returned data (dd/MM/yyyy). Can differ from the
+  /// selected date when the new day has no measurements yet.
+  final String? dataDate;
+
+  const HydroDateBar({super.key, this.dataDate});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -43,6 +47,8 @@ class HydroDateBar extends ConsumerWidget {
 
     final dateStr =
         '${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year}';
+    final showOldDataNote =
+        dataDate != null && dataDate!.isNotEmpty && dataDate != dateStr;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -92,13 +98,28 @@ class HydroDateBar extends ConsumerWidget {
                     const Icon(Icons.calendar_month_outlined,
                         size: 16, color: AppColors.primary),
                     const SizedBox(width: 6),
-                    Text(
-                      '$dateStr ${isToday ? "(Hôm nay)" : ""}',
-                      style: const TextStyle(
-                        color: AppColors.primary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '$dateStr ${isToday ? "(Hôm nay)" : ""}',
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        if (showOldDataNote)
+                          Text(
+                            'Dữ liệu ngày $dataDate',
+                            style: const TextStyle(
+                              color: AppColors.bd1,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                      ],
                     ),
                   ],
                 ),
